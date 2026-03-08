@@ -2,17 +2,17 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { Readability } from '@mozilla/readability'
 import { JSDOM, VirtualConsole } from 'jsdom'
-import puppeteer, { type Browser } from 'puppeteer'
+import puppeteer, { type Browser, type Page } from 'puppeteer'
 import { z } from 'zod'
 
-// --- Constants ---
+// ── Constants ────────────────────────────────────────────────────────────────
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const TIMEOUT_SEARCH = 30_000
 const TIMEOUT_FETCH = 20_000
 const PRIVATE_IP_RE = /^172\.(1[6-9]|2\d|3[01])\./
 
-// --- Browser singleton ---
+// ── Browser singleton ────────────────────────────────────────────────────────
 
 let browser: Browser | null = null
 let browserPromise: Promise<Browser> | null = null
@@ -45,7 +45,7 @@ async function shutdown() {
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
-// --- Helpers ---
+// ── Utilities ────────────────────────────────────────────────────────────────
 
 const text = (content: string) => ({ content: [{ type: 'text' as const, text: content }] })
 const errorText = (msg: string) => ({ content: [{ type: 'text' as const, text: msg }], isError: true as const })
@@ -76,7 +76,19 @@ export function validateUrl(url: string): void {
   }
 }
 
-// --- Tools ---
+async function withPage<T>(timeout: number, fn: (page: Page) => Promise<T>): Promise<T> {
+  const b = await getBrowser()
+  const page = await b.newPage()
+  try {
+    page.setDefaultNavigationTimeout(timeout)
+    await page.setUserAgent({ userAgent: UA })
+    return await fn(page)
+  } finally {
+    await page.close()
+  }
+}
+
+// ── Tools ────────────────────────────────────────────────────────────────────
 
 const server = new McpServer({ name: 'scra', version: '0.0.1' })
 
@@ -126,19 +138,7 @@ server.registerTool(
   },
 )
 
-// --- Implementations ---
-
-async function withPage<T>(timeout: number, fn: (page: Awaited<ReturnType<Browser['newPage']>>) => Promise<T>): Promise<T> {
-  const b = await getBrowser()
-  const page = await b.newPage()
-  try {
-    page.setDefaultNavigationTimeout(timeout)
-    await page.setUserAgent({ userAgent: UA })
-    return await fn(page)
-  } finally {
-    await page.close()
-  }
-}
+// ── Implementations ──────────────────────────────────────────────────────────
 
 export async function search(query: string, limit: number) {
   const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
@@ -187,6 +187,6 @@ export async function fetchPage(url: string) {
   })
 }
 
-// --- Start ---
+// ── Start ────────────────────────────────────────────────────────────────────
 
 if (import.meta.main) await server.connect(new StdioServerTransport())

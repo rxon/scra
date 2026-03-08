@@ -1,10 +1,5 @@
 import { mock, beforeEach, afterEach, test, expect, describe } from 'bun:test'
 
-// ── Fetch mock (search tests) ─────────────────────────────────────────────────
-
-const mockFetch = mock(() => Promise.resolve({ text: () => Promise.resolve('') } as any))
-global.fetch = mockFetch as any
-
 // ── Puppeteer mock ────────────────────────────────────────────────────────────
 
 const mockClose = mock(() => Promise.resolve())
@@ -12,7 +7,7 @@ const mockGoto = mock(() => Promise.resolve({ ok: () => true, status: () => 200 
 const mockContent = mock(() => Promise.resolve(''))
 
 const mockPage = {
-  setDefaultNavigationTimeout: mock(() => {}),
+  setDefaultNavigationTimeout: mock(() => { }),
   setUserAgent: mock(() => Promise.resolve()),
   goto: mockGoto,
   content: mockContent,
@@ -49,36 +44,9 @@ mock.module('puppeteer', () => ({
 const { validateUrl, search, fetchPage, getBrowser, resetBrowser } =
   await import('./index')
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Fixtures ──────────────────────────────────────────────────────────────────
 
-function setupSearchMocks() {
-  resetBrowser()
-  _connected = true
-  mockLaunch.mockClear()
-  mockNewPage.mockClear()
-  mockClose.mockClear()
-  mockGoto.mockImplementation(() => Promise.resolve({ ok: () => true, status: () => 200 } as any))
-  mockContent.mockImplementation(() => Promise.resolve('<html><body></body></html>'))
-  mockLaunch.mockImplementation(() => {
-    _connected = true
-    return Promise.resolve(mockBrowser as any)
-  })
-}
-
-function teardownSearchMocks() {
-  resetBrowser()
-  _connected = true
-}
-
-function makeDDGHtml(results: Array<{ title: string; url: string; snippet: string; isAd?: boolean }>) {
-  const items = results.map(r => `
-    <div class="result${r.isAd ? ' result--ad' : ''}">
-      <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent(r.url)}">${r.title}</a>
-      <div class="result__snippet">${r.snippet}</div>
-    </div>`).join('')
-  return `<html><body>${items}</body></html>`
-}
-
+const EMPTY_HTML = '<html><body></body></html>'
 const ARTICLE_HTML = `<!DOCTYPE html>
 <html><head><title>Test Article</title></head><body>
 <article>
@@ -89,202 +57,251 @@ const ARTICLE_HTML = `<!DOCTYPE html>
 </article>
 </body></html>`
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 1. validateUrl — セキュリティテスト
-// ═══════════════════════════════════════════════════════════════════════════════
+function makeDDGHtml(results: Array<{ title: string; url: string; snippet: string; isAd?: boolean }>) {
+  const items = results.map(r => `
+    <div class="result${r.isAd ? ' result--ad' : ''}">
+      <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent(r.url)}">${r.title}</a>
+      <div class="result__snippet">${r.snippet}</div>
+    </div>`).join('')
+  return `<html><body>${items}</body></html>`
+}
+
+// ── Mock helpers ──────────────────────────────────────────────────────────────
+
+function setupMocks(defaultContent = EMPTY_HTML) {
+  resetBrowser()
+  _connected = true
+  mockLaunch.mockClear()
+  mockNewPage.mockClear()
+  mockClose.mockClear()
+  mockGoto.mockImplementation(() => Promise.resolve({ ok: () => true, status: () => 200 } as any))
+  mockContent.mockImplementation(() => Promise.resolve(defaultContent))
+  mockLaunch.mockImplementation(() => {
+    _connected = true
+    return Promise.resolve(mockBrowser as any)
+  })
+}
+
+const teardown = () => { resetBrowser(); _connected = true }
+
+// ── 1. validateUrl ────────────────────────────────────────────────────────────
 
 describe('validateUrl', () => {
-  // 正常系
-  test('https:// URL を許可', () => {
-    expect(() => validateUrl('https://example.com')).not.toThrow()
-  })
-
-  test('http:// URL を許可', () => {
-    expect(() => validateUrl('http://example.com')).not.toThrow()
-  })
-
-  test('172.15.0.1 はプライベート範囲外なので許可', () => {
-    expect(() => validateUrl('http://172.15.0.1')).not.toThrow()
-  })
-
-  test('172.32.0.1 はプライベート範囲外なので許可', () => {
-    expect(() => validateUrl('http://172.32.0.1')).not.toThrow()
-  })
+  // 許可
+  test('https:// を許可', () => expect(() => validateUrl('https://example.com')).not.toThrow())
+  test('http:// を許可', () => expect(() => validateUrl('http://example.com')).not.toThrow())
+  test('172.15.x.x はプライベート範囲外なので許可', () => expect(() => validateUrl('http://172.15.0.1')).not.toThrow())
+  test('172.32.x.x はプライベート範囲外なので許可', () => expect(() => validateUrl('http://172.32.0.1')).not.toThrow())
+  test('認証情報付きURLはhostnameのみチェック', () => expect(() => validateUrl('https://user:pass@example.com')).not.toThrow())
+  test('Unicodeパスを許可', () => expect(() => validateUrl('https://example.com/path/あいう')).not.toThrow())
+  test('非常に長いURLを許可', () => expect(() => validateUrl(`https://example.com/${'a'.repeat(2000)}`)).not.toThrow())
 
   // スキーム拒否
-  test('file:// スキームを拒否', () => {
-    expect(() => validateUrl('file:///etc/passwd')).toThrow('許可されていないスキーム')
-  })
-
-  test('ftp:// スキームを拒否', () => {
-    expect(() => validateUrl('ftp://example.com')).toThrow('許可されていないスキーム')
-  })
+  test('file:// を拒否', () => expect(() => validateUrl('file:///etc/passwd')).toThrow('許可されていないスキーム'))
+  test('ftp:// を拒否', () => expect(() => validateUrl('ftp://example.com')).toThrow('許可されていないスキーム'))
+  test('javascript: を拒否', () => expect(() => validateUrl('javascript:alert(1)')).toThrow('許可されていないスキーム'))
 
   // プライベートIP拒否
-  test('localhost を拒否', () => {
-    expect(() => validateUrl('http://localhost')).toThrow('プライベートIP')
-  })
-
-  test('127.0.0.1 を拒否', () => {
-    expect(() => validateUrl('http://127.0.0.1')).toThrow('プライベートIP')
-  })
-
-  test('127.0.0.255 を拒否（境界）', () => {
-    expect(() => validateUrl('http://127.0.0.255')).toThrow('プライベートIP')
-  })
-
-  test('10.0.0.1 を拒否', () => {
-    expect(() => validateUrl('http://10.0.0.1')).toThrow('プライベートIP')
-  })
-
-  test('192.168.0.1 を拒否', () => {
-    expect(() => validateUrl('http://192.168.0.1')).toThrow('プライベートIP')
-  })
-
-  test('172.16.0.1 を拒否（境界下限）', () => {
-    expect(() => validateUrl('http://172.16.0.1')).toThrow('プライベートIP')
-  })
-
-  test('172.31.0.1 を拒否（境界上限）', () => {
-    expect(() => validateUrl('http://172.31.0.1')).toThrow('プライベートIP')
-  })
-
-  test('0.0.0.0 を拒否', () => {
-    expect(() => validateUrl('http://0.0.0.0')).toThrow('プライベートIP')
-  })
-
-  test('::1 を拒否', () => {
-    expect(() => validateUrl('http://[::1]')).toThrow('プライベートIP')
-  })
+  test('localhost を拒否', () => expect(() => validateUrl('http://localhost')).toThrow('プライベートIP'))
+  test('LOCALHOST を拒否', () => expect(() => validateUrl('http://LOCALHOST')).toThrow('プライベートIP'))
+  test('127.0.0.1 を拒否', () => expect(() => validateUrl('http://127.0.0.1')).toThrow('プライベートIP'))
+  test('127.0.0.255 を拒否', () => expect(() => validateUrl('http://127.0.0.255')).toThrow('プライベートIP'))
+  test('0.0.0.0 を拒否', () => expect(() => validateUrl('http://0.0.0.0')).toThrow('プライベートIP'))
+  test('::1 を拒否', () => expect(() => validateUrl('http://[::1]')).toThrow('プライベートIP'))
+  test('10.x.x.x を拒否', () => expect(() => validateUrl('http://10.0.0.1')).toThrow('プライベートIP'))
+  test('192.168.x.x を拒否', () => expect(() => validateUrl('http://192.168.0.1')).toThrow('プライベートIP'))
+  test('172.16.x.x を拒否（境界下限）', () => expect(() => validateUrl('http://172.16.0.1')).toThrow('プライベートIP'))
+  test('172.31.x.x を拒否（境界上限）', () => expect(() => validateUrl('http://172.31.0.1')).toThrow('プライベートIP'))
 
   // 不正フォーマット
-  test('不正フォーマットを拒否', () => {
-    expect(() => validateUrl('not-a-url')).toThrow('無効なURL')
+  test('不正フォーマットを拒否', () => expect(() => validateUrl('not-a-url')).toThrow('無効なURL'))
+
+  // 動作ドキュメント（現在ブロックされない）
+  test('169.254.169.254 は現在ブロックされない（AWSメタデータ）', () => {
+    expect(() => validateUrl('http://169.254.169.254')).not.toThrow()
+  })
+  test('[::ffff:7f00:1] は現在ブロックされない（IPv4-mapped IPv6）', () => {
+    expect(() => validateUrl('http://[::ffff:7f00:1]')).not.toThrow()
+  })
+  test('短縮IPv4（127.1）の動作ドキュメント', () => {
+    const hostname = new URL('http://127.1').hostname
+    if (hostname.startsWith('127.')) {
+      expect(() => validateUrl('http://127.1')).toThrow('プライベートIP')
+    } else {
+      expect(hostname).toBe('127.1')
+    }
   })
 })
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 2. search() — HTMLパーステスト
-// ═══════════════════════════════════════════════════════════════════════════════
+// ── 2. search ─────────────────────────────────────────────────────────────────
 
 describe('search', () => {
-  beforeEach(setupSearchMocks)
-  afterEach(teardownSearchMocks)
+  beforeEach(() => setupMocks())
+  afterEach(teardown)
 
-  test('正常: 3件の結果を正しくパース', async () => {
-    const html = makeDDGHtml([
+  test('3件の結果を正しくパースする', async () => {
+    mockContent.mockResolvedValueOnce(makeDDGHtml([
       { title: 'Title 1', url: 'https://example1.com', snippet: 'Snippet 1' },
       { title: 'Title 2', url: 'https://example2.com', snippet: 'Snippet 2' },
       { title: 'Title 3', url: 'https://example3.com', snippet: 'Snippet 3' },
-    ])
-    mockContent.mockResolvedValueOnce(html)
+    ]))
 
     const results = await search('test', 5)
-
     expect(results).toHaveLength(3)
     expect(results[0]).toEqual({ title: 'Title 1', url: 'https://example1.com', snippet: 'Snippet 1' })
     expect(results[1]!.url).toBe('https://example2.com')
     expect(results[2]!.title).toBe('Title 3')
   })
 
-  test('uddg URL デコード: エンコードされたURLを正しく復元', async () => {
-    const html = makeDDGHtml([
+  test('uddg URLをデコードして復元する', async () => {
+    mockContent.mockResolvedValueOnce(makeDDGHtml([
       { title: 'Encoded', url: 'https://example.com/path?q=hello world', snippet: '' },
-    ])
-    mockContent.mockResolvedValueOnce(html)
-
+    ]))
     const results = await search('test', 5)
     expect(results[0]!.url).toBe('https://example.com/path?q=hello world')
   })
 
-  test('広告除外: .result--ad クラスをスキップ（リグレッション）', async () => {
-    const html = makeDDGHtml([
+  test('.result--ad クラスをスキップする', async () => {
+    mockContent.mockResolvedValueOnce(makeDDGHtml([
       { title: 'Organic', url: 'https://organic.com', snippet: 'Real result' },
       { title: 'Ad Result', url: 'https://ad.com', snippet: 'Ad content', isAd: true },
       { title: 'Organic 2', url: 'https://organic2.com', snippet: 'Real result 2' },
-    ])
-    mockContent.mockResolvedValueOnce(html)
-
+    ]))
     const results = await search('test', 10)
-
     expect(results).toHaveLength(2)
     expect(results.every(r => r.url !== 'https://ad.com')).toBe(true)
   })
 
-  test('limit: 広告除外後に指定件数でslice', async () => {
-    const html = makeDDGHtml([
+  test('広告除外後に limit 件でスライスする', async () => {
+    mockContent.mockResolvedValueOnce(makeDDGHtml([
       { title: 'T1', url: 'https://e1.com', snippet: '' },
       { title: 'Ad', url: 'https://ad.com', snippet: '', isAd: true },
       { title: 'T2', url: 'https://e2.com', snippet: '' },
       { title: 'T3', url: 'https://e3.com', snippet: '' },
       { title: 'T4', url: 'https://e4.com', snippet: '' },
-    ])
-    mockContent.mockResolvedValueOnce(html)
-
-    const results = await search('test', 2)
-    expect(results).toHaveLength(2)
+    ]))
+    expect(await search('test', 2)).toHaveLength(2)
   })
 
-  test('結果ゼロ: .result要素なし → 空配列', async () => {
-    mockContent.mockResolvedValueOnce('<html><body></body></html>')
-
-    const results = await search('test', 5)
-    expect(results).toHaveLength(0)
+  test('.result 要素なし → 空配列', async () => {
+    expect(await search('test', 5)).toHaveLength(0)
   })
 
-  test('uddg なし: URLがnullになりフィルタされる', async () => {
-    const html = `<html><body>
+  test('uddg パラメータなし → その要素をフィルタ', async () => {
+    mockContent.mockResolvedValueOnce(`<html><body>
       <div class="result">
         <a class="result__a" href="/no-uddg">No uddg link</a>
         <div class="result__snippet">snippet</div>
       </div>
-    </body></html>`
-    mockContent.mockResolvedValueOnce(html)
+    </body></html>`)
+    expect(await search('test', 5)).toHaveLength(0)
+  })
 
+  test('href 属性なし → その要素をフィルタ', async () => {
+    mockContent.mockResolvedValueOnce(`<html><body>
+      <div class="result">
+        <a class="result__a">No href attribute</a>
+        <div class="result__snippet">snippet</div>
+      </div>
+    </body></html>`)
+    expect(await search('test', 5)).toHaveLength(0)
+  })
+
+  test('スニペット要素なし → snippet: "" で返す', async () => {
+    mockContent.mockResolvedValueOnce(`<html><body>
+      <div class="result">
+        <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent('https://example.com')}">Title</a>
+      </div>
+    </body></html>`)
     const results = await search('test', 5)
-    expect(results).toHaveLength(0)
+    expect(results).toHaveLength(1)
+    expect(results[0]!.snippet).toBe('')
   })
 
-  test('タイムアウト: goto がthrow → throw', async () => {
+  test('タイトルが空文字でも結果として返す', async () => {
+    mockContent.mockResolvedValueOnce(`<html><body>
+      <div class="result">
+        <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent('https://example.com')}"></a>
+        <div class="result__snippet">snippet</div>
+      </div>
+    </body></html>`)
+    const results = await search('test', 5)
+    expect(results).toHaveLength(1)
+    expect(results[0]!.title).toBe('')
+  })
+
+  test('不正な href URL → その要素をスキップして他を返す', async () => {
+    mockContent.mockResolvedValueOnce(`<html><body>
+      <div class="result">
+        <a class="result__a" href="//invalid url with spaces">Bad URL</a>
+        <div class="result__snippet">bad</div>
+      </div>
+      <div class="result">
+        <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent('https://good.com')}">Good</a>
+        <div class="result__snippet">good</div>
+      </div>
+    </body></html>`)
+    const results = await search('test', 5)
+    expect(results).toHaveLength(1)
+    expect(results[0]!.url).toBe('https://good.com')
+  })
+
+  test('goto() がthrow → search全体がreject', async () => {
+    mockGoto.mockRejectedValueOnce(new Error('Navigation failed'))
+    await expect(search('test', 5)).rejects.toThrow('Navigation failed')
+  })
+
+  test('goto() タイムアウト → throw', async () => {
     mockGoto.mockRejectedValueOnce(new DOMException('The operation was aborted', 'AbortError'))
-
     await expect(search('test', 5)).rejects.toThrow()
   })
 
-  test('ネットワークエラー: goto がthrow → throw', async () => {
-    mockGoto.mockRejectedValueOnce(new Error('net::ERR_NAME_NOT_RESOLVED'))
+  // 境界値・ファズ
+  test('limit=1 → 1件のみ返す', async () => {
+    mockContent.mockResolvedValueOnce(makeDDGHtml([
+      { title: 'T1', url: 'https://e1.com', snippet: '' },
+      { title: 'T2', url: 'https://e2.com', snippet: '' },
+    ]))
+    expect(await search('test', 1)).toHaveLength(1)
+  })
 
-    await expect(search('test', 5)).rejects.toThrow()
+  test('limit=20 → 最大20件返す', async () => {
+    const items = Array.from({ length: 25 }, (_, i) => ({ title: `T${i}`, url: `https://e${i}.com`, snippet: '' }))
+    mockContent.mockResolvedValueOnce(makeDDGHtml(items))
+    expect(await search('test', 20)).toHaveLength(20)
+  })
+
+  test("query に SQL インジェクション風文字", async () => {
+    expect(Array.isArray(await search("' OR 1=1", 5))).toBe(true)
+  })
+
+  test('query に XSS風文字', async () => {
+    expect(Array.isArray(await search('<script>alert(1)</script>', 5))).toBe(true)
+  })
+
+  test('query に日本語マルチバイト文字', async () => {
+    expect(Array.isArray(await search('あいうえお', 5))).toBe(true)
+  })
+
+  test('query が空文字列 → 空配列', async () => {
+    expect(await search('', 5)).toHaveLength(0)
   })
 })
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 3. fetchPage() — ユニットテスト + 異常系
-// ═══════════════════════════════════════════════════════════════════════════════
+// ── 3. fetchPage ──────────────────────────────────────────────────────────────
 
 describe('fetchPage', () => {
-  beforeEach(() => {
-    resetBrowser()
-    mockLaunch.mockClear()
-    mockNewPage.mockClear()
-    mockClose.mockClear()
-    mockGoto.mockImplementation(() => Promise.resolve({ ok: () => true, status: () => 200 } as any))
-    mockContent.mockImplementation(() => Promise.resolve(ARTICLE_HTML))
-  })
+  beforeEach(() => setupMocks(ARTICLE_HTML))
+  afterEach(teardown)
 
-  afterEach(() => {
-    resetBrowser()
-  })
-
-  test('正常: Readability抽出 → "# タイトル\\n\\n本文" 形式', async () => {
+  test('Readability抽出 → "# タイトル\\n\\n本文" 形式', async () => {
     const result = await fetchPage('https://example.com')
-
     expect(result).toMatch(/^# Test Article\n\n/)
     expect(result).toContain('This is the first paragraph')
   })
 
-  test('テキスト整形: 連続空行が\\n\\nに圧縮される', async () => {
-    const htmlWithBlanks = `<!DOCTYPE html>
+  test('連続空行を \\n\\n に圧縮する', async () => {
+    mockContent.mockImplementationOnce(() => Promise.resolve(`<!DOCTYPE html>
 <html><head><title>Blank Lines Test</title></head><body>
 <article>
 <p>First paragraph with substantial content to pass Readability threshold.</p>
@@ -295,45 +312,71 @@ describe('fetchPage', () => {
 
 <p>Third paragraph for additional content required by Readability parser.</p>
 </article>
-</body></html>`
-    mockContent.mockImplementationOnce(() => Promise.resolve(htmlWithBlanks))
-
-    const result = await fetchPage('https://example.com')
-
-    expect(result).not.toMatch(/\n{3,}/)
+</body></html>`))
+    expect(await fetchPage('https://example.com')).not.toMatch(/\n{3,}/)
   })
 
-  test('HTTPエラー: response.ok() = false → throw', async () => {
-    mockGoto.mockImplementationOnce(() =>
-      Promise.resolve({ ok: () => false, status: () => 404 } as any),
-    )
+  test('HTMLエンティティ &amp; → & としてデコードされる', async () => {
+    mockContent.mockImplementationOnce(() => Promise.resolve(`<!DOCTYPE html>
+<html><head><title>Test &amp; Article</title></head><body><article>
+<h1>Test &amp; Article</h1>
+<p>Content with &amp; entity and substantial text for Readability to parse properly here.</p>
+<p>Second paragraph with more content to ensure the parser functions correctly for testing.</p>
+<p>Third paragraph for additional content required by Readability parser threshold here.</p>
+</article></body></html>`))
+    const result = await fetchPage('https://example.com')
+    expect(result).toContain('&')
+    expect(result).not.toContain('&amp;')
+  })
 
+  test('HTTP 404 → throw', async () => {
+    mockGoto.mockImplementationOnce(() =>
+      Promise.resolve({ ok: () => false, status: () => 404 } as any))
     await expect(fetchPage('https://example.com')).rejects.toThrow('HTTPエラー 404')
   })
 
-  test('Readabilityエラー: parse()がnull → throw', async () => {
-    // Readabilityはコンテンツが不十分な場合nullを返す
+  test('Readability が null を返す → throw', async () => {
     mockContent.mockImplementationOnce(() =>
-      Promise.resolve('<html><head><title>Empty</title></head><body></body></html>'),
-    )
-
+      Promise.resolve('<html><head><title>Empty</title></head><body></body></html>'))
     await expect(fetchPage('https://example.com')).rejects.toThrow('ページを読み取れませんでした')
   })
 
-  test('page.close(): 例外発生時もfinallyで必ず呼ばれる', async () => {
+  test('goto() が null を返す → ok() チェックをスキップして正常続行', async () => {
+    mockGoto.mockResolvedValueOnce(null)
+    const result = await fetchPage('https://example.com')
+    expect(result).toMatch(/^# Test Article/)
+    expect(mockClose).toHaveBeenCalledTimes(1)
+  })
+
+  test('goto() がthrow → page.close() が finally で呼ばれる', async () => {
+    mockClose.mockClear()
+    mockGoto.mockRejectedValueOnce(new Error('Navigation timeout'))
+    await expect(fetchPage('https://example.com')).rejects.toThrow('Navigation timeout')
+    expect(mockClose).toHaveBeenCalledTimes(1)
+  })
+
+  test('newPage() がthrow → page.close() は呼ばれない', async () => {
+    mockClose.mockClear()
+    mockNewPage.mockRejectedValueOnce(new Error('newPage crash'))
+    await expect(fetchPage('https://example.com')).rejects.toThrow('newPage crash')
+    expect(mockClose).toHaveBeenCalledTimes(0)
+  })
+
+  test('例外発生時も page.close() が finally で呼ばれる', async () => {
     mockClose.mockClear()
     mockGoto.mockImplementationOnce(() =>
-      Promise.resolve({ ok: () => false, status: () => 500 } as any),
-    )
-
+      Promise.resolve({ ok: () => false, status: () => 500 } as any))
     await expect(fetchPage('https://example.com')).rejects.toThrow()
     expect(mockClose).toHaveBeenCalledTimes(1)
   })
+
+  test('launch失敗 → fetchPage全体がreject', async () => {
+    mockLaunch.mockRejectedValueOnce(new Error('browser launch failed'))
+    await expect(fetchPage('https://example.com')).rejects.toThrow('browser launch failed')
+  })
 })
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 4. getBrowser() — ブラウザ管理テスト
-// ═══════════════════════════════════════════════════════════════════════════════
+// ── 4. getBrowser ─────────────────────────────────────────────────────────────
 
 describe('getBrowser', () => {
   beforeEach(() => {
@@ -347,330 +390,53 @@ describe('getBrowser', () => {
       return Promise.resolve(mockBrowser as any)
     })
   })
+  afterEach(teardown)
 
-  afterEach(() => {
-    resetBrowser()
-    _connected = true
-  })
-
-  test('初回: puppeteer.launch() が呼ばれる', async () => {
+  test('初回は puppeteer.launch() を呼ぶ', async () => {
     await getBrowser()
     expect(mockLaunch).toHaveBeenCalledTimes(1)
   })
 
-  test('2回目: キャッシュされたインスタンスを返す（launch は1回のみ）', async () => {
+  test('2回目以降はキャッシュを返す（launch は1回のみ）', async () => {
     const b1 = await getBrowser()
     const b2 = await getBrowser()
-
     expect(mockLaunch).toHaveBeenCalledTimes(1)
     expect(b1).toBe(b2)
   })
 
-  test('再接続: browser.connected = false の場合 launch が再実行される（リグレッション）', async () => {
-    await getBrowser()
-    expect(mockLaunch).toHaveBeenCalledTimes(1)
-
-    // ブラウザが切断状態をシミュレート
-    _connected = false
-
-    await getBrowser()
-    expect(mockLaunch).toHaveBeenCalledTimes(2)
-  })
-
-  test('disconnected イベント: 発火後に getBrowser が再起動する', async () => {
-    await getBrowser()
-    expect(_disconnectedHandler).not.toBeNull()
-
-    // disconnected イベントを発火
-    _disconnectedHandler!()
-
-    // 次の getBrowser で launch が再実行される
-    mockLaunch.mockClear()
-    await getBrowser()
-    expect(mockLaunch).toHaveBeenCalledTimes(1)
-  })
-
-  test('並列呼び出し: launch は1回のみ（競合防止）', async () => {
+  test('並列呼び出し → launch は1回のみ（競合防止）', async () => {
     const [b1, b2, b3] = await Promise.all([getBrowser(), getBrowser(), getBrowser()])
-
     expect(mockLaunch).toHaveBeenCalledTimes(1)
     expect(b1).toBe(b2)
     expect(b2).toBe(b3)
   })
-})
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 5. ファズ境界値テスト
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('ファズ境界値テスト', () => {
-  beforeEach(setupSearchMocks)
-  afterEach(teardownSearchMocks)
-
-  test("query に SQLインジェクション風文字: \"' OR 1=1\"", async () => {
-    const results = await search("' OR 1=1", 5)
-    expect(Array.isArray(results)).toBe(true)
+  test('browser.connected = false → launch を再実行する', async () => {
+    await getBrowser()
+    _connected = false
+    await getBrowser()
+    expect(mockLaunch).toHaveBeenCalledTimes(2)
   })
 
-  test('query に XSS風文字: "<script>alert(1)</script>"', async () => {
-    const results = await search('<script>alert(1)</script>', 5)
-    expect(Array.isArray(results)).toBe(true)
-  })
-
-  test('query に日本語マルチバイト文字', async () => {
-    const results = await search('あいうえお', 5)
-    expect(Array.isArray(results)).toBe(true)
-  })
-
-  test('query が空文字列: Zodは通す、結果ゼロ', async () => {
-    const results = await search('', 5)
-    expect(results).toHaveLength(0)
-  })
-
-  test('limit 境界: 1件', async () => {
-    const html = makeDDGHtml([
-      { title: 'T1', url: 'https://e1.com', snippet: '' },
-      { title: 'T2', url: 'https://e2.com', snippet: '' },
-    ])
-    mockContent.mockResolvedValueOnce(html)
-
-    const results = await search('test', 1)
-    expect(results).toHaveLength(1)
-  })
-
-  test('limit 境界: 20件（全件取得）', async () => {
-    const items = Array.from({ length: 25 }, (_, i) => ({
-      title: `Title ${i}`,
-      url: `https://example${i}.com`,
-      snippet: '',
-    }))
-    const html = makeDDGHtml(items)
-    mockContent.mockResolvedValueOnce(html)
-
-    const results = await search('test', 20)
-    expect(results).toHaveLength(20)
-  })
-
-  test('validateUrl: URLにUnicode文字が含まれる', () => {
-    expect(() => validateUrl('https://example.com/path/あいう')).not.toThrow()
-  })
-
-  test('validateUrl: 非常に長いURL', () => {
-    const longPath = 'a'.repeat(2000)
-    expect(() => validateUrl(`https://example.com/${longPath}`)).not.toThrow()
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 6. validateUrl — 追加セキュリティテスト
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('validateUrl — 追加テスト', () => {
-  test('http://LOCALHOST → hostnameが小文字に正規化されて拒否される（A-2）', () => {
-    expect(() => validateUrl('http://LOCALHOST')).toThrow('プライベートIP')
-  })
-
-  test('http://127.1 → 短縮IPv4形式の動作確認（C-10）', () => {
-    const hostname = new URL('http://127.1').hostname
-    if (hostname === '127.0.0.1' || hostname.startsWith('127.')) {
-      expect(() => validateUrl('http://127.1')).toThrow('プライベートIP')
-    } else {
-      // BunがIPを正規化しない場合、現在のチェックを通過する（動作をドキュメント化）
-      expect(hostname).toBe('127.1')
-    }
-  })
-
-  test('http://169.254.169.254 → 現在はチェックなし（A-3 動作ドキュメント）', () => {
-    // AWSメタデータエンドポイント。クラウド環境では追加チェックが望ましい
-    expect(() => validateUrl('http://169.254.169.254')).not.toThrow()
-  })
-
-  test('http://[::ffff:7f00:1] → IPv4-mapped IPv6は現在通過（A-4 動作ドキュメント）', () => {
-    // ::ffff:127.0.0.1 のhex表現。現在のチェックではブロックされない
-    expect(() => validateUrl('http://[::ffff:7f00:1]')).not.toThrow()
-  })
-
-  test('https://user:pass@example.com → hostnameのみチェック、認証情報は無視（C-2）', () => {
-    expect(() => validateUrl('https://user:pass@example.com')).not.toThrow()
-  })
-
-  test('javascript:alert(1) → スキーム拒否（C-3）', () => {
-    expect(() => validateUrl('javascript:alert(1)')).toThrow('許可されていないスキーム')
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 7. getBrowser() — launch失敗テスト（A-1 バグ修正確認）
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('getBrowser — launch失敗', () => {
-  beforeEach(() => {
-    resetBrowser()
-    _connected = true
-    _disconnectedHandler = null
+  test('disconnected イベント後 → 次の getBrowser で再起動する', async () => {
+    await getBrowser()
+    expect(_disconnectedHandler).not.toBeNull()
+    _disconnectedHandler!()
     mockLaunch.mockClear()
+    await getBrowser()
+    expect(mockLaunch).toHaveBeenCalledTimes(1)
   })
 
-  afterEach(() => {
-    resetBrowser()
-    _connected = true
-  })
-
-  test('launch失敗後: 2回目は再度launchを試みる（A-1 バグ修正確認）', async () => {
+  test('launch失敗後 → 2回目は再試行できる', async () => {
     mockLaunch
       .mockRejectedValueOnce(new Error('launch failed'))
       .mockImplementationOnce(() => {
         _connected = true
         return Promise.resolve(mockBrowser as any)
       })
-
     await expect(getBrowser()).rejects.toThrow('launch failed')
-
-    // バグ修正後: browserPromise が null にリセットされているので再試行できる
     const b = await getBrowser()
     expect(mockLaunch).toHaveBeenCalledTimes(2)
     expect(b).toBeDefined()
-  })
-
-  test('launch失敗: fetchPage全体がrejectされる（B-1）', async () => {
-    mockLaunch.mockRejectedValueOnce(new Error('browser launch failed'))
-
-    await expect(fetchPage('https://example.com')).rejects.toThrow('browser launch failed')
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 8. fetchPage() — 追加異常系テスト
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('fetchPage — 追加異常系', () => {
-  beforeEach(() => {
-    resetBrowser()
-    _connected = true
-    mockLaunch.mockClear()
-    mockNewPage.mockClear()
-    mockClose.mockClear()
-    mockGoto.mockImplementation(() => Promise.resolve({ ok: () => true, status: () => 200 } as any))
-    mockContent.mockImplementation(() => Promise.resolve(ARTICLE_HTML))
-    mockLaunch.mockImplementation(() => {
-      _connected = true
-      return Promise.resolve(mockBrowser as any)
-    })
-  })
-
-  afterEach(() => {
-    resetBrowser()
-    _connected = true
-  })
-
-  test('goto() がnullを返す → ok()チェックスキップ → 正常続行（B-5）', async () => {
-    mockGoto.mockResolvedValueOnce(null)
-
-    const result = await fetchPage('https://example.com')
-    expect(result).toMatch(/^# Test Article/)
-    expect(mockClose).toHaveBeenCalledTimes(1)
-  })
-
-  test('goto() がthrow → page.close() がfinallyで呼ばれる（B-6）', async () => {
-    mockGoto.mockRejectedValueOnce(new Error('Navigation timeout'))
-
-    await expect(fetchPage('https://example.com')).rejects.toThrow('Navigation timeout')
-    expect(mockClose).toHaveBeenCalledTimes(1)
-  })
-
-  test('newPage() がthrow → fetchPageがrejectされる、page.close()は呼ばれない（B-7）', async () => {
-    mockNewPage.mockRejectedValueOnce(new Error('newPage crash'))
-
-    await expect(fetchPage('https://example.com')).rejects.toThrow('newPage crash')
-    // page が未作成なので close() は呼ばれない
-    expect(mockClose).toHaveBeenCalledTimes(0)
-  })
-
-  test('HTMLエンティティ: &amp; → & としてデコードされる（B-8）', async () => {
-    const htmlWithEntities = `<!DOCTYPE html>
-<html><head><title>Test &amp; Article</title></head><body><article>
-<h1>Test &amp; Article</h1>
-<p>Content with &amp; entity and substantial text for Readability to parse properly here.</p>
-<p>Second paragraph with more content to ensure the parser functions correctly for testing.</p>
-<p>Third paragraph for additional content required by Readability parser threshold here.</p>
-</article></body></html>`
-    mockContent.mockImplementationOnce(() => Promise.resolve(htmlWithEntities))
-
-    const result = await fetchPage('https://example.com')
-    expect(result).toContain('&')
-    expect(result).not.toContain('&amp;')
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 9. search() — 追加テスト
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('search — 追加テスト', () => {
-  beforeEach(setupSearchMocks)
-  afterEach(teardownSearchMocks)
-
-  test('href属性がnull → URLがnullになりフィルタされる（B-2）', async () => {
-    const html = `<html><body>
-      <div class="result">
-        <a class="result__a">No href attribute</a>
-        <div class="result__snippet">snippet</div>
-      </div>
-    </body></html>`
-    mockContent.mockResolvedValueOnce(html)
-
-    const results = await search('test', 5)
-    expect(results).toHaveLength(0)
-  })
-
-  test('スニペット要素なし → snippet: "" で返る（B-3）', async () => {
-    const html = `<html><body>
-      <div class="result">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent('https://example.com')}">Title</a>
-      </div>
-    </body></html>`
-    mockContent.mockResolvedValueOnce(html)
-
-    const results = await search('test', 5)
-    expect(results).toHaveLength(1)
-    expect(results[0]!.snippet).toBe('')
-  })
-
-  test('goto() がthrow → search全体がreject（B-4）', async () => {
-    mockGoto.mockRejectedValueOnce(new Error('Navigation failed'))
-
-    await expect(search('test', 5)).rejects.toThrow('Navigation failed')
-  })
-
-  test('不正なhref URL → その要素はスキップ、他の結果は返る（B-9 バグ修正確認）', async () => {
-    const html = `<html><body>
-      <div class="result">
-        <a class="result__a" href="//invalid url with spaces">Bad URL</a>
-        <div class="result__snippet">bad</div>
-      </div>
-      <div class="result">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent('https://good.com')}">Good</a>
-        <div class="result__snippet">good</div>
-      </div>
-    </body></html>`
-    mockContent.mockResolvedValueOnce(html)
-
-    const results = await search('test', 5)
-    expect(results).toHaveLength(1)
-    expect(results[0]!.url).toBe('https://good.com')
-  })
-
-  test('タイトルが空文字 → title: "" で結果として返る（C-1）', async () => {
-    const html = `<html><body>
-      <div class="result">
-        <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent('https://example.com')}"></a>
-        <div class="result__snippet">snippet</div>
-      </div>
-    </body></html>`
-    mockContent.mockResolvedValueOnce(html)
-
-    const results = await search('test', 5)
-    expect(results).toHaveLength(1)
-    expect(results[0]!.title).toBe('')
   })
 })
