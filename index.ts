@@ -161,7 +161,7 @@ async function fetchPage(url: string) {
       .map(l => l.trim())
       .filter((l, i, a) => l || (a[i - 1] !== ''))
       .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
+      .replace(/\n{3,}/g, '\n\n')//空白や改行を省略
       .trim()
     return `# ${article.title}\n\n${body}`
   } finally {
