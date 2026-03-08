@@ -128,12 +128,10 @@ async function search(query: string, limit: number) {
   })
   const dom = new JSDOM(await res.text())
   return [...dom.window.document.querySelectorAll<HTMLElement>('.result')]
-    .filter(el => !!el.querySelector('.result__a'))
-    .slice(0, limit)
+    .filter(el => !el.classList.contains('result--ad') && !!el.querySelector('.result__a'))
     .map(el => {
       const a = el.querySelector<HTMLAnchorElement>('.result__a')!
       const href = a.getAttribute('href')
-      // uddgで広告除外
       const uddg = href ? new URL('https:' + href).searchParams.get('uddg') : null
       const resolvedUrl = uddg ? decodeURIComponent(uddg) : null
       return {
@@ -143,6 +141,7 @@ async function search(query: string, limit: number) {
       }
     })
     .filter((r): r is { title: string; url: string; snippet: string } => !!r.url)
+    .slice(0, limit)
 }
 
 async function fetchPage(url: string) {
