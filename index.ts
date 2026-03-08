@@ -18,11 +18,13 @@ let browser: Browser | null = null
 let browserPromise: Promise<Browser> | null = null
 
 async function getBrowser(): Promise<Browser> {
-  if (browser) return browser
+  if (browser?.connected) return browser
+  browser = null
   if (!browserPromise) {
     browserPromise = puppeteer.launch({ headless: true }).then(b => {
       browser = b
       browserPromise = null
+      b.on('disconnected', () => { browser = null })
       return b
     })
   }
