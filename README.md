@@ -1,15 +1,32 @@
 # scra
 
-To install dependencies:
+DuckDuckGoによるWeb検索と[Readability.js](https://github.com/mozilla/readability)を使ったWebフェッチを行うミニマムなMCPサーバー
 
+## Usage
 ```bash
+git clone https://github.com/rxon/scra.git
 bun install
 ```
 
-To run:
+LMStudioなどでの設定
 
-```bash
-bun run index.ts
+```json
+{
+  "mcpServers": {
+    "scra": {
+      "command": "bun",
+      "args": [
+        "run",
+        "/path/to/scra/index.ts"
+      ]
+    }
+  }
+}
 ```
 
-This project was created using `bun init` in bun v1.3.10. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+## Tools
+- `search` キーワードでDuckDuckGoを検索し、タイトル・URL・スニペットを番号付きで返す。 
+- `fetch` URLを指定してページ本文をMarkdown形式（# タイトル + 本文）で返す。
+
+## License
+WTFPL
