@@ -17,7 +17,7 @@ const PRIVATE_IP_RE = /^172\.(1[6-9]|2\d|3[01])\./
 let browser: Browser | null = null
 let browserPromise: Promise<Browser> | null = null
 
-async function getBrowser(): Promise<Browser> {
+export async function getBrowser(): Promise<Browser> {
   if (browser?.connected) return browser
   browser = null
   if (!browserPromise) {
@@ -29,6 +29,11 @@ async function getBrowser(): Promise<Browser> {
     })
   }
   return browserPromise
+}
+
+export function resetBrowser(): void {
+  browser = null
+  browserPromise = null
 }
 
 async function shutdown() {
@@ -44,7 +49,7 @@ const text = (content: string) => ({ content: [{ type: 'text' as const, text: co
 const errorText = (msg: string) => ({ content: [{ type: 'text' as const, text: msg }], isError: true as const })
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-function validateUrl(url: string): void {
+export function validateUrl(url: string): void {
   let parsed: URL
   try {
     parsed = new URL(url)
@@ -58,6 +63,7 @@ function validateUrl(url: string): void {
   if (
     h === 'localhost' ||
     h === '::1' ||
+    h === '[::1]' ||
     h === '0.0.0.0' ||
     h.startsWith('127.') ||
     h.startsWith('10.') ||
@@ -120,7 +126,7 @@ server.registerTool(
 
 // --- Implementations ---
 
-async function search(query: string, limit: number) {
+export async function search(query: string, limit: number) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
   const res = await fetch(url, {
     headers: { 'User-Agent': UA },
@@ -144,7 +150,7 @@ async function search(query: string, limit: number) {
     .slice(0, limit)
 }
 
-async function fetchPage(url: string) {
+export async function fetchPage(url: string) {
   const b = await getBrowser()
   const page = await b.newPage()
   try {
@@ -172,4 +178,4 @@ async function fetchPage(url: string) {
 
 // --- Start ---
 
-await server.connect(new StdioServerTransport())
+if (import.meta.main) await server.connect(new StdioServerTransport())
