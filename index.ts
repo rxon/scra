@@ -21,12 +21,14 @@ export async function getBrowser(): Promise<Browser> {
   if (browser?.connected) return browser
   browser = null
   if (!browserPromise) {
-    browserPromise = puppeteer.launch({ headless: true }).then(b => {
-      browser = b
-      browserPromise = null
-      b.on('disconnected', () => { browser = null })
-      return b
-    })
+    browserPromise = puppeteer.launch({ headless: true })
+      .then(b => {
+        browser = b
+        browserPromise = null
+        b.on('disconnected', () => { browser = null })
+        return b
+      })
+      .catch(e => { browserPromise = null; throw e })
   }
   return browserPromise
 }
@@ -138,15 +140,19 @@ export async function search(query: string, limit: number) {
     .map(el => {
       const a = el.querySelector<HTMLAnchorElement>('.result__a')!
       const href = a.getAttribute('href')
-      const uddg = href ? new URL('https:' + href).searchParams.get('uddg') : null
-      const resolvedUrl = uddg ? decodeURIComponent(uddg) : null
-      return {
-        title: a.textContent?.trim() ?? '',
-        url: resolvedUrl,
-        snippet: el.querySelector('.result__snippet')?.textContent?.trim() ?? '',
+      try {
+        const uddg = href ? new URL('https:' + href).searchParams.get('uddg') : null
+        const resolvedUrl = uddg ? decodeURIComponent(uddg) : null
+        return {
+          title: a.textContent?.trim() ?? '',
+          url: resolvedUrl,
+          snippet: el.querySelector('.result__snippet')?.textContent?.trim() ?? '',
+        }
+      } catch {
+        return null
       }
     })
-    .filter((r): r is { title: string; url: string; snippet: string } => !!r.url)
+    .filter((r): r is { title: string; url: string; snippet: string } => r !== null && !!r.url)
     .slice(0, limit)
 }
 
