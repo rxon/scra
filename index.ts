@@ -8,7 +8,7 @@ import { z } from 'zod'
 // --- Constants ---
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-const TIMEOUT_SEARCH = 10_000
+const TIMEOUT_SEARCH = 30_000
 const TIMEOUT_FETCH = 20_000
 const PRIVATE_IP_RE = /^172\.(1[6-9]|2\d|3[01])\./
 
@@ -128,40 +128,47 @@ server.registerTool(
 
 // --- Implementations ---
 
-export async function search(query: string, limit: number) {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA },
-    signal: AbortSignal.timeout(TIMEOUT_SEARCH),
-  })
-  const dom = new JSDOM(await res.text())
-  return [...dom.window.document.querySelectorAll<HTMLElement>('.result')]
-    .filter(el => !el.classList.contains('result--ad') && !!el.querySelector('.result__a'))
-    .map(el => {
-      const a = el.querySelector<HTMLAnchorElement>('.result__a')!
-      const href = a.getAttribute('href')
-      try {
-        const uddg = href ? new URL('https:' + href).searchParams.get('uddg') : null
-        const resolvedUrl = uddg ? decodeURIComponent(uddg) : null
-        return {
-          title: a.textContent?.trim() ?? '',
-          url: resolvedUrl,
-          snippet: el.querySelector('.result__snippet')?.textContent?.trim() ?? '',
-        }
-      } catch {
-        return null
-      }
-    })
-    .filter((r): r is { title: string; url: string; snippet: string } => r !== null && !!r.url)
-    .slice(0, limit)
-}
-
-export async function fetchPage(url: string) {
+async function withPage<T>(timeout: number, fn: (page: Awaited<ReturnType<Browser['newPage']>>) => Promise<T>): Promise<T> {
   const b = await getBrowser()
   const page = await b.newPage()
   try {
-    page.setDefaultNavigationTimeout(TIMEOUT_FETCH)
+    page.setDefaultNavigationTimeout(timeout)
     await page.setUserAgent({ userAgent: UA })
+    return await fn(page)
+  } finally {
+    await page.close()
+  }
+}
+
+export async function search(query: string, limit: number) {
+  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
+  return withPage(TIMEOUT_SEARCH, async (page) => {
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded' })
+    const dom = new JSDOM(await page.content(), { virtualConsole: new VirtualConsole() })
+    return [...dom.window.document.querySelectorAll<HTMLElement>('.result')]
+      .filter(el => !el.classList.contains('result--ad') && !!el.querySelector('.result__a'))
+      .map(el => {
+        const a = el.querySelector<HTMLAnchorElement>('.result__a')!
+        const href = a.getAttribute('href')
+        try {
+          const uddg = href ? new URL('https:' + href).searchParams.get('uddg') : null
+          const resolvedUrl = uddg ? decodeURIComponent(uddg) : null
+          return {
+            title: a.textContent?.trim() ?? '',
+            url: resolvedUrl,
+            snippet: el.querySelector('.result__snippet')?.textContent?.trim() ?? '',
+          }
+        } catch {
+          return null
+        }
+      })
+      .filter((r): r is { title: string; url: string; snippet: string } => r !== null && !!r.url)
+      .slice(0, limit)
+  })
+}
+
+export async function fetchPage(url: string) {
+  return withPage(TIMEOUT_FETCH, async (page) => {
     const response = await page.goto(url, { waitUntil: 'domcontentloaded' })
     if (response && !response.ok()) {
       throw new Error(`HTTPエラー ${response.status()}: ${url}`)
@@ -174,12 +181,10 @@ export async function fetchPage(url: string) {
       .map(l => l.trim())
       .filter((l, i, a) => l || (a[i - 1] !== ''))
       .join('\n')
-      .replace(/\n{3,}/g, '\n\n')//空白や改行を省略
+      .replace(/\n{3,}/g, '\n\n')
       .trim()
     return `# ${article.title}\n\n${body}`
-  } finally {
-    await page.close()
-  }
+  })
 }
 
 // --- Start ---

@@ -51,6 +51,25 @@ const { validateUrl, search, fetchPage, getBrowser, resetBrowser } =
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+function setupSearchMocks() {
+  resetBrowser()
+  _connected = true
+  mockLaunch.mockClear()
+  mockNewPage.mockClear()
+  mockClose.mockClear()
+  mockGoto.mockImplementation(() => Promise.resolve({ ok: () => true, status: () => 200 } as any))
+  mockContent.mockImplementation(() => Promise.resolve('<html><body></body></html>'))
+  mockLaunch.mockImplementation(() => {
+    _connected = true
+    return Promise.resolve(mockBrowser as any)
+  })
+}
+
+function teardownSearchMocks() {
+  resetBrowser()
+  _connected = true
+}
+
 function makeDDGHtml(results: Array<{ title: string; url: string; snippet: string; isAd?: boolean }>) {
   const items = results.map(r => `
     <div class="result${r.isAd ? ' result--ad' : ''}">
@@ -149,9 +168,8 @@ describe('validateUrl', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('search', () => {
-  beforeEach(() => {
-    mockFetch.mockClear()
-  })
+  beforeEach(setupSearchMocks)
+  afterEach(teardownSearchMocks)
 
   test('正常: 3件の結果を正しくパース', async () => {
     const html = makeDDGHtml([
@@ -159,7 +177,7 @@ describe('search', () => {
       { title: 'Title 2', url: 'https://example2.com', snippet: 'Snippet 2' },
       { title: 'Title 3', url: 'https://example3.com', snippet: 'Snippet 3' },
     ])
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 5)
 
@@ -173,7 +191,7 @@ describe('search', () => {
     const html = makeDDGHtml([
       { title: 'Encoded', url: 'https://example.com/path?q=hello world', snippet: '' },
     ])
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 5)
     expect(results[0]!.url).toBe('https://example.com/path?q=hello world')
@@ -185,7 +203,7 @@ describe('search', () => {
       { title: 'Ad Result', url: 'https://ad.com', snippet: 'Ad content', isAd: true },
       { title: 'Organic 2', url: 'https://organic2.com', snippet: 'Real result 2' },
     ])
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 10)
 
@@ -201,14 +219,14 @@ describe('search', () => {
       { title: 'T3', url: 'https://e3.com', snippet: '' },
       { title: 'T4', url: 'https://e4.com', snippet: '' },
     ])
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 2)
     expect(results).toHaveLength(2)
   })
 
   test('結果ゼロ: .result要素なし → 空配列', async () => {
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve('<html><body></body></html>') } as any)
+    mockContent.mockResolvedValueOnce('<html><body></body></html>')
 
     const results = await search('test', 5)
     expect(results).toHaveLength(0)
@@ -221,23 +239,22 @@ describe('search', () => {
         <div class="result__snippet">snippet</div>
       </div>
     </body></html>`
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 5)
     expect(results).toHaveLength(0)
   })
 
-  test('タイムアウト: AbortError → throw', async () => {
-    const abortError = new DOMException('The operation was aborted', 'AbortError')
-    mockFetch.mockRejectedValueOnce(abortError)
+  test('タイムアウト: goto がthrow → throw', async () => {
+    mockGoto.mockRejectedValueOnce(new DOMException('The operation was aborted', 'AbortError'))
 
     await expect(search('test', 5)).rejects.toThrow()
   })
 
-  test('ネットワークエラー: TypeError → throw', async () => {
-    mockFetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  test('ネットワークエラー: goto がthrow → throw', async () => {
+    mockGoto.mockRejectedValueOnce(new Error('net::ERR_NAME_NOT_RESOLVED'))
 
-    await expect(search('test', 5)).rejects.toThrow('Failed to fetch')
+    await expect(search('test', 5)).rejects.toThrow()
   })
 })
 
@@ -387,10 +404,8 @@ describe('getBrowser', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('ファズ境界値テスト', () => {
-  beforeEach(() => {
-    mockFetch.mockClear()
-    mockFetch.mockResolvedValue({ text: () => Promise.resolve('<html><body></body></html>') } as any)
-  })
+  beforeEach(setupSearchMocks)
+  afterEach(teardownSearchMocks)
 
   test("query に SQLインジェクション風文字: \"' OR 1=1\"", async () => {
     const results = await search("' OR 1=1", 5)
@@ -417,7 +432,7 @@ describe('ファズ境界値テスト', () => {
       { title: 'T1', url: 'https://e1.com', snippet: '' },
       { title: 'T2', url: 'https://e2.com', snippet: '' },
     ])
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 1)
     expect(results).toHaveLength(1)
@@ -430,7 +445,7 @@ describe('ファズ境界値テスト', () => {
       snippet: '',
     }))
     const html = makeDDGHtml(items)
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 20)
     expect(results).toHaveLength(20)
@@ -592,9 +607,8 @@ describe('fetchPage — 追加異常系', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('search — 追加テスト', () => {
-  beforeEach(() => {
-    mockFetch.mockClear()
-  })
+  beforeEach(setupSearchMocks)
+  afterEach(teardownSearchMocks)
 
   test('href属性がnull → URLがnullになりフィルタされる（B-2）', async () => {
     const html = `<html><body>
@@ -603,7 +617,7 @@ describe('search — 追加テスト', () => {
         <div class="result__snippet">snippet</div>
       </div>
     </body></html>`
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 5)
     expect(results).toHaveLength(0)
@@ -615,19 +629,17 @@ describe('search — 追加テスト', () => {
         <a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent('https://example.com')}">Title</a>
       </div>
     </body></html>`
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 5)
     expect(results).toHaveLength(1)
     expect(results[0]!.snippet).toBe('')
   })
 
-  test('res.text() がreject → search全体がreject（B-4）', async () => {
-    mockFetch.mockResolvedValueOnce({
-      text: () => Promise.reject(new Error('text() failed')),
-    } as any)
+  test('goto() がthrow → search全体がreject（B-4）', async () => {
+    mockGoto.mockRejectedValueOnce(new Error('Navigation failed'))
 
-    await expect(search('test', 5)).rejects.toThrow('text() failed')
+    await expect(search('test', 5)).rejects.toThrow('Navigation failed')
   })
 
   test('不正なhref URL → その要素はスキップ、他の結果は返る（B-9 バグ修正確認）', async () => {
@@ -641,7 +653,7 @@ describe('search — 追加テスト', () => {
         <div class="result__snippet">good</div>
       </div>
     </body></html>`
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 5)
     expect(results).toHaveLength(1)
@@ -655,7 +667,7 @@ describe('search — 追加テスト', () => {
         <div class="result__snippet">snippet</div>
       </div>
     </body></html>`
-    mockFetch.mockResolvedValueOnce({ text: () => Promise.resolve(html) } as any)
+    mockContent.mockResolvedValueOnce(html)
 
     const results = await search('test', 5)
     expect(results).toHaveLength(1)
