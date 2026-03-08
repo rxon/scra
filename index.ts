@@ -5,20 +5,42 @@ import { JSDOM, VirtualConsole } from 'jsdom'
 import puppeteer, { type Browser } from 'puppeteer'
 import { z } from 'zod'
 
+// --- Constants ---
+
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+const TIMEOUT_SEARCH = 10_000
+const TIMEOUT_FETCH = 20_000
+const PRIVATE_IP_RE = /^172\.(1[6-9]|2\d|3[01])\./
+
 // --- Browser singleton ---
 
 let browser: Browser | null = null
-async function getBrowser() {
-  if (!browser) browser = await puppeteer.launch({ headless: true })
-  return browser
+let browserPromise: Promise<Browser> | null = null
+
+async function getBrowser(): Promise<Browser> {
+  if (browser) return browser
+  if (!browserPromise) {
+    browserPromise = puppeteer.launch({ headless: true }).then(b => {
+      browser = b
+      browserPromise = null
+      return b
+    })
+  }
+  return browserPromise
 }
-process.on('SIGINT', async () => { await browser?.close(); process.exit(0) })
-process.on('SIGTERM', async () => { await browser?.close(); process.exit(0) })
+
+async function shutdown() {
+  await browser?.close()
+  process.exit(0)
+}
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)
 
 // --- Helpers ---
 
 const text = (content: string) => ({ content: [{ type: 'text' as const, text: content }] })
 const errorText = (msg: string) => ({ content: [{ type: 'text' as const, text: msg }], isError: true as const })
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 function validateUrl(url: string): void {
   let parsed: URL
@@ -27,18 +49,20 @@ function validateUrl(url: string): void {
   } catch {
     throw new Error(`無効なURL: ${url}`)
   }
-  if (parsed.protocol === 'file:') throw new Error('file:// URLはアクセスできません')
-  const hostname = parsed.hostname
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(`許可されていないスキーム: ${parsed.protocol}`)
+  }
+  const h = parsed.hostname
   if (
-    hostname === 'localhost' ||
-    hostname.startsWith('127.') ||
-    hostname.startsWith('10.') ||
-    hostname.startsWith('192.168.') ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
-    hostname === '::1' ||
-    hostname === '0.0.0.0'
+    h === 'localhost' ||
+    h === '::1' ||
+    h === '0.0.0.0' ||
+    h.startsWith('127.') ||
+    h.startsWith('10.') ||
+    h.startsWith('192.168.') ||
+    PRIVATE_IP_RE.test(h)
   ) {
-    throw new Error(`プライベートIPへのアクセスは拒否されました: ${hostname}`)
+    throw new Error(`プライベートIPへのアクセスは拒否されました: ${h}`)
   }
 }
 
@@ -66,7 +90,7 @@ server.registerTool(
       )
       return text(lines.join('\n\n'))
     } catch (e) {
-      return errorText(`search エラー: ${e instanceof Error ? e.message : String(e)}`)
+      return errorText(`search エラー: ${errMsg(e)}`)
     }
   },
 )
@@ -87,7 +111,7 @@ server.registerTool(
       validateUrl(url)
       return text(await fetchPage(url))
     } catch (e) {
-      return errorText(`fetch エラー: ${e instanceof Error ? e.message : String(e)}`)
+      return errorText(`fetch エラー: ${errMsg(e)}`)
     }
   },
 )
@@ -97,24 +121,23 @@ server.registerTool(
 async function search(query: string, limit: number) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36' },
-    signal: AbortSignal.timeout(10_000),
+    headers: { 'User-Agent': UA },
+    signal: AbortSignal.timeout(TIMEOUT_SEARCH),
   })
   const dom = new JSDOM(await res.text())
-  const results = [...dom.window.document.querySelectorAll<HTMLElement>('.result')]
-  return results
+  return [...dom.window.document.querySelectorAll<HTMLElement>('.result')]
+    .filter(el => !!el.querySelector('.result__a'))
     .slice(0, limit)
     .map(el => {
-      const a = el.querySelector<HTMLAnchorElement>('.result__a')
-      const snippetEl = el.querySelector('.result__snippet')
-      const href = a?.getAttribute('href')
-      const resolvedUrl = href
-        ? decodeURIComponent(new URL('https:' + href).searchParams.get('uddg') ?? href)
-        : null
+      const a = el.querySelector<HTMLAnchorElement>('.result__a')!
+      const href = a.getAttribute('href')
+      // uddgで広告除外
+      const uddg = href ? new URL('https:' + href).searchParams.get('uddg') : null
+      const resolvedUrl = uddg ? decodeURIComponent(uddg) : null
       return {
-        title: a?.textContent?.trim() ?? '',
+        title: a.textContent?.trim() ?? '',
         url: resolvedUrl,
-        snippet: snippetEl?.textContent?.trim() ?? '',
+        snippet: el.querySelector('.result__snippet')?.textContent?.trim() ?? '',
       }
     })
     .filter((r): r is { title: string; url: string; snippet: string } => !!r.url)
@@ -124,8 +147,8 @@ async function fetchPage(url: string) {
   const b = await getBrowser()
   const page = await b.newPage()
   try {
-    page.setDefaultNavigationTimeout(20_000)
-    await page.setUserAgent({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' })
+    page.setDefaultNavigationTimeout(TIMEOUT_FETCH)
+    await page.setUserAgent({ userAgent: UA })
     const response = await page.goto(url, { waitUntil: 'domcontentloaded' })
     if (response && !response.ok()) {
       throw new Error(`HTTPエラー ${response.status()}: ${url}`)
@@ -133,7 +156,13 @@ async function fetchPage(url: string) {
     const dom = new JSDOM(await page.content(), { url, virtualConsole: new VirtualConsole() })
     const article = new Readability(dom.window.document).parse()
     if (!article) throw new Error(`ページを読み取れませんでした: ${url}`)
-    const body = (article.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim()
+    const body = (article.textContent ?? '')
+      .split('\n')
+      .map(l => l.trim())
+      .filter((l, i, a) => l || (a[i - 1] !== ''))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
     return `# ${article.title}\n\n${body}`
   } finally {
     await page.close()
